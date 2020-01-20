@@ -5,6 +5,9 @@ require 'yaml'
 require_relative 'payload'
 
 class Webhook < Sinatra::Base
+  class RequestError < StandardError; end
+  class ServerError < StandardError; end
+  
   CONFIG_PATH = 'compose/docker-compose.yml'.freeze
   STAGES_PATH = '/home/deploy/webhook/stages.yml'
 
@@ -19,10 +22,9 @@ class Webhook < Sinatra::Base
 
   def update_config(service, image)
     config = YAML.load_file(CONFIG_PATH)
-    return true if config["services"][service].nil?
+    raise RequestError.new("Unknown service") if config["services"][service].nil?
     config["services"][service]["image"] = image
     File.open(CONFIG_PATH, 'w') {|f| f.write config.to_yaml }
-    return false
   end
 
   before do
@@ -56,15 +58,18 @@ class Webhook < Sinatra::Base
       return answer(404, 'invalid image') unless $?.success?
     end
 
-    if $?.success?
-      Dir.chdir(stage_path)
-
-      return answer(404, 'unknown service') if update_config(service, image)
+    Dir.chdir(stage_path) do
+      update_config(service, image)
       system "docker-compose up -Vd #{service}"
+      raise ServerError.new('could not restart container') unless $?.success?
     end
 
-    return answer(500, 'could not restart container') unless $?.success?
     return answer(200, "service #{service} updated with image #{image}")
+  
+  rescue RequestError => e
+    return answer(400, e.to_s)
+  rescue ServerError => e
+    return answer(500, e.to_s)
   end
 
   def answer(response_status, message)
